@@ -125,7 +125,10 @@ func fetchAndProcessFeed(lang, url string) []Article {
 		wg.Add(1)
 		go func(idx int, contentDesc string, title string) {
 			defer wg.Done()
-			summary, rec := processWithGemini(title, contentDesc)
+			transTitle, summary, rec := processWithGemini(title, contentDesc)
+			if transTitle != "" && transTitle != title {
+				articles[idx].Title = transTitle
+			}
 			articles[idx].Summary = summary
 			articles[idx].TranslationRec = rec
 		}(i, item.Description, item.Title)
@@ -135,20 +138,20 @@ func fetchAndProcessFeed(lang, url string) []Article {
 	return articles
 }
 
-func processWithGemini(title string, content string) (string, string) {
+func processWithGemini(title string, content string) (string, string, string) {
 	geminiSem <- struct{}{}
 	defer func() { <-geminiSem }()
 
 	apiKey := os.Getenv("GEMINI_API_KEY")
 	if apiKey == "" {
-		return "⚠️ 缺少 GEMINI_API_KEY", "無法評估"
+		return title, "⚠️ 缺少 GEMINI_API_KEY", "無法評估"
 	}
 
 	ctx := context.Background()
 	client, err := genai.NewClient(ctx, option.WithAPIKey(apiKey))
 	if err != nil {
 		log.Printf("Error creating Gemini client: %v", err)
-		return "客戶端建立失敗", "無法評估"
+		return title, "客戶端建立失敗", "無法評估"
 	}
 	defer client.Close()
 
@@ -162,7 +165,9 @@ func processWithGemini(title string, content string) (string, string) {
 標題：%s
 部分內容/描述：%s
 
-請以強制格式提供以下兩項（必須包含 "=====" 在兩項之中作為分隔線，不要有多餘內容）：
+請以強制格式提供以下三項（必須包含 2 個 "=====" 作為分隔線，不要有多餘內容）：
+[文章標題的繁體中文翻譯]
+=====
 [中文重點摘要（約50-150字內，包含核心技術或重點）]
 =====
 [評估結果：適合 / 不適合。（請簡接用一句話解釋為何，例如：適合，包含豐富工程細節；或 不適合，僅為短公告）]`, title, content)
@@ -180,7 +185,7 @@ func processWithGemini(title string, content string) (string, string) {
 
 	if err != nil {
 		log.Printf("Error generating content for '%s': %v", title, err)
-		return "API 頻率限制 (Rate Limit)，請稍後重試", "無法評估"
+		return title, "API 頻率限制 (Rate Limit)，請稍後重試", "無法評估"
 	}
 
 	if len(resp.Candidates) > 0 && len(resp.Candidates[0].Content.Parts) > 0 {
@@ -190,11 +195,13 @@ func processWithGemini(title string, content string) (string, string) {
 		}
 		
 		parts := strings.Split(output, "=====")
-		if len(parts) >= 2 {
-			return strings.TrimSpace(parts[0]), strings.TrimSpace(parts[1])
+		if len(parts) >= 3 {
+			return strings.TrimSpace(parts[0]), strings.TrimSpace(parts[1]), strings.TrimSpace(parts[2])
+		} else if len(parts) >= 2 {
+			return title, strings.TrimSpace(parts[0]), strings.TrimSpace(parts[1])
 		}
-		return strings.TrimSpace(output), "無法拆分結果"
+		return title, strings.TrimSpace(output), "無法拆分結果"
 	}
 
-	return "沒有回傳結果", "無法評估"
+	return title, "沒有回傳結果", "無法評估"
 }
