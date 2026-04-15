@@ -1,0 +1,7 @@
+.env
+server
+techblog-preview
+
+# Mac
+.DS_Store
+.gitignore
