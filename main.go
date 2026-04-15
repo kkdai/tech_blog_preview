@@ -9,6 +9,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/google/generative-ai-go/genai"
 	"github.com/joho/godotenv"
@@ -32,6 +33,7 @@ type FeedData struct {
 }
 
 var geminiModel string
+var geminiSem = make(chan struct{}, 2) // Limit concurrent Gemini API calls to 2
 
 func main() {
 	err := godotenv.Load()
@@ -134,6 +136,9 @@ func fetchAndProcessFeed(lang, url string) []Article {
 }
 
 func processWithGemini(title string, content string) (string, string) {
+	geminiSem <- struct{}{}
+	defer func() { <-geminiSem }()
+
 	apiKey := os.Getenv("GEMINI_API_KEY")
 	if apiKey == "" {
 		return "⚠️ 缺少 GEMINI_API_KEY", "無法評估"
@@ -162,10 +167,20 @@ func processWithGemini(title string, content string) (string, string) {
 =====
 [評估結果：適合 / 不適合。（請簡接用一句話解釋為何，例如：適合，包含豐富工程細節；或 不適合，僅為短公告）]`, title, content)
 
-	resp, err := model.GenerateContent(ctx, genai.Text(prompt))
+	var resp *genai.GenerateContentResponse
+
+	for retries := 0; retries < 3; retries++ {
+		resp, err = model.GenerateContent(ctx, genai.Text(prompt))
+		if err == nil {
+			break
+		}
+		log.Printf("Retry %d generating content for '%s': %v", retries+1, title, err)
+		time.Sleep(time.Duration(1+retries*2) * time.Second)
+	}
+
 	if err != nil {
 		log.Printf("Error generating content for '%s': %v", title, err)
-		return "生成 API 發生錯誤或者達到頻率限制", "無法評估"
+		return "API 頻率限制 (Rate Limit)，請稍後重試", "無法評估"
 	}
 
 	if len(resp.Candidates) > 0 && len(resp.Candidates[0].Content.Parts) > 0 {
